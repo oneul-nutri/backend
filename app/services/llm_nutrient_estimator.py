@@ -1,47 +1,13 @@
 """LLM을 사용한 영양소 추정 서비스"""
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
+from openai import AsyncOpenAI
 
 from app.core.config import get_settings
 
 
-class NutrientEstimatorService:
-    """LLM을 사용하여 음식의 영양소 정보를 추정하는 서비스"""
-    
-    def __init__(self):
-        settings = get_settings()
-        if not settings.openai_api_key:
-            raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다.")
-        self.llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            model="gpt-4o-mini",
-            temperature=0.3,
-            model_kwargs={"response_format": {"type": "json_object"}}
-        )
-    
-    async def estimate_nutrients(
-        self,
-        food_name: str,
-        ingredients: List[str],
-        portion_size_g: float = 100.0
-    ) -> Dict:
-        """
-        음식명과 재료를 기반으로 영양소 정보를 추정합니다.
-        
-        Args:
-            food_name: 음식 이름 (예: "라멘", "닭가슴살 샐러드")
-            ingredients: 재료 목록 (예: ["라면", "계란", "파"])
-            portion_size_g: 기준량 (g, 기본값 100g)
-            
-        Returns:
-            영양소 정보 딕셔너리
-        """
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """당신은 영양학 전문가입니다. 음식명과 재료를 기반으로 영양소 정보를 추정하십시오.
+_SYSTEM_PROMPT = """당신은 영양학 전문가입니다. 음식명과 재료를 기반으로 영양소 정보를 추정하십시오.
 
 **중요 지침:**
 1. **반드시 1인분(1 Serving) 기준으로 영양소를 계산하십시오.** (100g 기준 아님)
@@ -51,7 +17,7 @@ class NutrientEstimatorService:
 5. 정보가 불확실한 경우 0을 반환하십시오.
 
 **출력 형식 (JSON):**
-{{
+{
   "protein": 단백질(g),
   "carbs": 탄수화물(g),
   "fat": 지방(g),
@@ -71,25 +37,58 @@ class NutrientEstimatorService:
   "total_weight_g": 1인분 중량(g),
   "food_class1": "대분류 (예: 면류, 샐러드류)",
   "food_class2": "중분류 또는 주재료"
-}}"""),
-            ("human", """음식명: {food_name}
-재료: {ingredients}
+}"""
 
-위 음식의 1인분 기준 영양소 정보와 예상 중량을 JSON 형식으로 추정해주세요.""")
-        ])
-        
-        chain = prompt | self.llm | StrOutputParser()
-        
+
+class NutrientEstimatorService:
+    """LLM을 사용하여 음식의 영양소 정보를 추정하는 서비스"""
+
+    def __init__(self):
+        settings = get_settings()
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다.")
+        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+    async def estimate_nutrients(
+        self,
+        food_name: str,
+        ingredients: List[str],
+        portion_size_g: float = 100.0
+    ) -> Dict:
+        """
+        음식명과 재료를 기반으로 영양소 정보를 추정합니다.
+
+        Args:
+            food_name: 음식 이름 (예: "라멘", "닭가슴살 샐러드")
+            ingredients: 재료 목록 (예: ["라면", "계란", "파"])
+            portion_size_g: 기준량 (g, 기본값 100g)
+
+        Returns:
+            영양소 정보 딕셔너리
+        """
+        ingredients_str = ", ".join(ingredients) if ingredients else "정보 없음"
+        user_prompt = (
+            f"음식명: {food_name}\n"
+            f"재료: {ingredients_str}\n\n"
+            "위 음식의 1인분 기준 영양소 정보와 예상 중량을 JSON 형식으로 추정해주세요."
+        )
+
+        response_text = ""
         try:
-            ingredients_str = ", ".join(ingredients) if ingredients else "정보 없음"
-            response = await chain.ainvoke({
-                "food_name": food_name,
-                "ingredients": ingredients_str
-            })
-            
+            response = await self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.3,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            response_text = response.choices[0].message.content or ""
+
             # JSON 파싱
-            nutrients = json.loads(response)
-            
+            nutrients = json.loads(response_text)
+
             # 기본값 설정 (누락된 필드 처리)
             default_nutrients = {
                 "protein": 0.0,
@@ -111,10 +110,10 @@ class NutrientEstimatorService:
                 "food_class1": "사용자추가",
                 "food_class2": None
             }
-            
+
             # 기본값과 병합
             result = {**default_nutrients, **nutrients}
-            
+
             # 칼로리가 0이면 자동 계산
             if result["calories"] == 0:
                 result["calories"] = int(
@@ -122,15 +121,15 @@ class NutrientEstimatorService:
                     result["carbs"] * 4 +
                     result["fat"] * 9
                 )
-            
+
             print(f"✅ LLM 영양소 추정 완료: {food_name} - {result['calories']}kcal")
             print(f"   단백질={result['protein']}g, 탄수화물={result['carbs']}g, 지방={result['fat']}g")
-            
+
             return result
-            
+
         except json.JSONDecodeError as e:
             print(f"⚠️ LLM 응답 JSON 파싱 실패: {e}")
-            print(f"   응답: {response}")
+            print(f"   응답: {response_text}")
             # 기본값 반환
             return {
                 "protein": 0.0,
@@ -160,4 +159,3 @@ class NutrientEstimatorService:
 def get_nutrient_estimator() -> NutrientEstimatorService:
     """NutrientEstimatorService 싱글톤 인스턴스 반환"""
     return NutrientEstimatorService()
-

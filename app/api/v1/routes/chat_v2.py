@@ -8,8 +8,7 @@ from functools import lru_cache
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from langchain.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +19,6 @@ from app.db.models import ChatHistory, Conversation, User
 from app.db.redis_session import get_redis_client
 from app.db.session import get_session
 from app.services.chat_service import ChatService
-from app.services.langchain_agent import AgentContext, get_langchain_agent_factory
 from app.services.recipe_recommendation_service import get_recipe_recommendation_service
 from app.services.user_context_cache import get_or_build_user_context, refresh_user_context
 
@@ -32,15 +30,15 @@ settings = get_settings()
 
 
 @lru_cache
-def get_clarify_llm() -> ChatOpenAI:
+def get_clarify_llm() -> AsyncOpenAI:
+    """Clarify 응답 생성용 OpenAI 클라이언트 팩토리.
+
+    이름은 LangChain 시절 그대로 유지 — 테스트 패치 지점(app.api.v1.routes.chat_v2.get_clarify_llm)
+    하위 호환. 모델/temperature/response_format은 호출 시점 인자로 지정.
+    """
     if not settings.openai_api_key:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured.")
-    return ChatOpenAI(
-        api_key=settings.openai_api_key,
-        model="gpt-4o-mini",
-        temperature=0.4,
-        model_kwargs={"response_format": {"type": "json_object"}},
-    )
+    return AsyncOpenAI(api_key=settings.openai_api_key)
 
 
 CLARIFY_CONFIRMATION_MESSAGE = "레시피를 추천해드릴까요? 진행을 원하시면 '네' 또는 '응'이라고 답해주세요."
@@ -84,11 +82,7 @@ def _log_recipe_debug(event: str, extra: Optional[Dict[str, Any]] = None) -> Non
     print(f"🧩 [RecipeConfirm] {serialized}")
 
 
-CLARIFY_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """너는 친근한 한국어 영양사 챗봇이야.
+_CLARIFY_SYSTEM_TEMPLATE = """너는 친근한 한국어 영양사 챗봇이야.
 - 최근 대화 요약: {summary}
 - 항상 JSON 객체만 출력해야 해. 필드는 response_id, action_type, message, suggestions, needs_tool_call.
 - 사용자가 잡담이나 영양/건강 관련 질문을 하면 자연스럽게 답하고, 필요한 경우 부드럽게 추가 정보를 물어봐.
@@ -99,11 +93,7 @@ CLARIFY_PROMPT = ChatPromptTemplate.from_messages(
 - 모호한 질문이나 정보 탐색, 부정 표현은 needs_tool_call=false로 유지해.
 - suggestions에는 사용자가 바로 클릭해서 보낼 수 있는 짧은 발화 예시 2~3개(예: "매콤한 레시피 추천해줘", "다른 질문 있어")만 넣어. 챗봇이 던지는 질문은 message에만 넣어.
 - action_type은 항상 TEXT_ONLY로 고정해.
-""",
-        ),
-        ("human", "{user_message}"),
-    ]
-)
+"""
 
 
 def _normalize_text_for_intent(text: str) -> str:
@@ -129,14 +119,19 @@ def _evaluate_recipe_intent_flags(user_message: str) -> tuple[bool, bool]:
 
 
 async def _generate_clarify_payload(summary: str, user_message: str) -> dict:
-    clarify_llm = get_clarify_llm()
-    messages = CLARIFY_PROMPT.format_messages(
-        summary=summary or "이전 대화 없음",
-        user_message=user_message,
-    )
+    clarify_client = get_clarify_llm()
+    system_content = _CLARIFY_SYSTEM_TEMPLATE.format(summary=summary or "이전 대화 없음")
     try:
-        response = await clarify_llm.ainvoke(messages)
-        payload = json.loads(response.content)
+        response = await clarify_client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.4,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_message},
+            ],
+        )
+        payload = json.loads(response.choices[0].message.content or "{}")
     except Exception:
         payload = {}
 
@@ -172,23 +167,14 @@ async def refresh_chat_context(
 @router.post("/prewarm")
 async def prewarm_chat_agent(
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Recommend 탭 진입 직후 AI가 기본 정보를 읽어들이도록 워밍업."""
-    cached_context = await get_or_build_user_context(db, current_user.user_id)
-    conversation = await db.get(Conversation, f"prewarm-{current_user.user_id}")
-    agent_context = AgentContext(
-        user=current_user,
-        session=db,
-        conversation_summary=conversation.sum_chat if conversation else None,
-        diseases=cached_context.diseases,
-        allergies=cached_context.allergies,
-        has_eaten_today=cached_context.has_eaten_today,
-    )
-    agent_factory = get_langchain_agent_factory()
-    agent_executor = await agent_factory.create_executor(context=agent_context)
-    await agent_executor.ainvoke({"input": "사용자 정보를 준비하고 다음 질문을 받을 준비를 하세요."})
-    return {"success": True, "message": "에이전트 워밍업 완료"}
+    """Recommend 탭 진입 시 프론트가 호출하는 fire-and-forget no-op stub.
+
+    이전에는 LangChain ReAct 에이전트를 워밍업했으나, agent tool 4개가 모두
+    존재하지 않는 서비스 메서드를 호출하는 dead 구현이라 runtime 확률적 실패만
+    일으켰다. 프론트는 응답 body를 검사하지 않으므로 2xx만 보장하면 충분하다.
+    """
+    return {"success": True, "message": "ready"}
 
 
 @router.post("", response_model=ChatMessageResponse)
@@ -241,16 +227,6 @@ async def handle_chat_message(
             conversation_summary = latest_summary
     elif conversation and conversation.sum_chat:
         conversation_summary = conversation.sum_chat
-
-    # 필요한 경우에만 생성하도록 지연
-    agent_context = AgentContext(
-        user=current_user,
-        session=db,
-        conversation_summary=conversation_summary,
-        diseases=diseases,
-        allergies=allergies,
-        has_eaten_today=has_eaten_today,
-    )
 
     mode = (request.mode or "clarify").lower()
     ai_response_payload: str

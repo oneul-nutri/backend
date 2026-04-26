@@ -3,8 +3,7 @@ from typing import Optional, List, Dict, Union
 import json
 from sqlalchemy import select, or_, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from langchain_openai import ChatOpenAI
-from langchain.schema import SystemMessage, HumanMessage
+from openai import AsyncOpenAI
 import re
 
 from app.db.models_food_nutrients import FoodNutrient
@@ -38,11 +37,7 @@ def normalize_food_name(food_name: str, ingredients: List[str] = None) -> str:
 
 class FoodMatchingService:
     """GPT 추천 음식을 DB의 실제 음식과 매칭하는 서비스"""
-    
-    def __init__(self):
-        """초기화 - OpenAI 클라이언트 설정"""
-        self.client = None  # GPT 유사도 매칭은 현재 사용하지 않음
-    
+
     # 핵심 키워드 목록 (음식 카테고리)
     FOOD_KEYWORDS = [
         "샐러드", "볶음", "구이", "찜", "조림", "튀김",
@@ -81,48 +76,49 @@ class FoodMatchingService:
     
     def __init__(self):
         if settings.openai_api_key:
-            self.llm = ChatOpenAI(
-                api_key=settings.openai_api_key,
-                model="gpt-4o-mini",
-                temperature=0.2,
-            )
+            self.client: Optional[AsyncOpenAI] = AsyncOpenAI(api_key=settings.openai_api_key)
         else:
-            self.llm = None
-    
+            self.client = None
+
     async def interpret_portion(self, food_name: str, portion_text: str) -> float:
         """
         자연어 섭취량을 그램(g) 단위로 변환
-        
+
         Args:
             food_name: 음식 이름
             portion_text: 자연어 섭취량 (예: "한 그릇", "반 개", "200g")
-            
+
         Returns:
             추정된 무게 (g)
         """
-        if not self.llm:
+        if not self.client:
             return 100.0  # 기본값
 
         prompt = f"""
         음식 '{food_name}'의 섭취량 표현 '{portion_text}'를 그램(g) 단위로 변환하세요.
-        
+
         일반적인 기준:
         - 밥 한 공기: 210g
         - 국/찌개 한 대접: 250-300g
         - 반찬 1인분: 50-80g
         - 라면 1개: 120g (면) + 500ml (국물) -> 섭취량은 보통 500-600g (국물 포함 시)
         - 피자 1조각: 100-120g
-        
+
         JSON 형식으로 'weight_g' 키에 숫자만 포함하여 응답하세요.
         예: {{"weight_g": 210}}
         """
-        
+
         try:
-            response = await self.llm.ainvoke([
-                SystemMessage(content="당신은 식품 영양 전문가입니다. 정확한 중량을 JSON으로 반환하세요."),
-                HumanMessage(content=prompt)
-            ])
-            data = json.loads(response.content)
+            response = await self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": "당신은 식품 영양 전문가입니다. 정확한 중량을 JSON으로 반환하세요."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            data = json.loads(response.choices[0].message.content or "{}")
             return float(data.get("weight_g", 100.0))
         except Exception as e:
             print(f"⚠️ 섭취량 해석 실패: {e}")
@@ -141,9 +137,8 @@ class FoodMatchingService:
         
         매칭 우선순위:
         1. 정확한 이름 매칭 (nutrient_name == food_name)
-        2. 사용자 기여 음식 검색 (user_contributed_foods) - NEW
+        2. 사용자 기여 음식 검색 (user_contributed_foods)
         3. 재료 기반 매칭 (food_class1, food_class2 활용)
-        4. GPT 기반 유사도 매칭 (토큰 절약)
         
         Args:
             session: DB 세션
@@ -184,13 +179,6 @@ class FoodMatchingService:
         if ingredient_match:
             print(f"✅ [STEP 3] 재료 기반 매칭 성공: {ingredient_match.food_id} - {ingredient_match.nutrient_name}")
             return ingredient_match
-        
-        # ========== STEP 4: GPT 기반 유사 음식 찾기 (최후의 수단) ==========
-        if hasattr(self, 'client') and self.client:
-            gpt_match = await self._gpt_similarity_match(session, food_name, ingredients)
-            if gpt_match:
-                print(f"✅ [STEP 4] GPT 유사도 매칭 성공: {gpt_match.food_id} - {gpt_match.nutrient_name}")
-                return gpt_match
         
         print(f"❌ 매칭 실패: '{food_name}'에 대한 적합한 음식을 찾을 수 없음")
         return None
@@ -613,115 +601,6 @@ class FoodMatchingService:
         candidates = list(result.scalars().all())
         print(f"  → 일반 검색으로 {len(candidates)}개 후보 검색")
         return candidates
-    
-    async def _gpt_similarity_match(
-        self,
-        session: AsyncSession,
-        food_name: str,
-        ingredients: List[str]
-    ) -> Optional[FoodNutrient]:
-        """
-        GPT를 활용한 유사 음식 찾기 (최후의 수단)
-        
-        토큰 절약 전략:
-        1. DB에서 관련 음식 목록만 가져오기 (food_id, nutrient_name)
-        2. GPT에게 "이 중 가장 유사한 음식의 food_id를 선택하세요" 요청
-        3. 선택된 food_id로 DB 조회
-        
-        DB 구조 고려:
-        - nutrient_name: "국밥_덮치마리" 형식
-        - food_class1: "곡밥류" 형식
-        """
-        if not self.llm:
-            return None
-        
-        try:
-            print(f"  🤖 GPT 유사도 매칭 시작...")
-            
-            # 1. 주재료 추출 (공백 제거)
-            food_name_clean = food_name.replace(" ", "")
-            main_ingredient = ingredients[0].replace(" ", "") if ingredients else food_name_clean[:2]
-            
-            # 2. 관련 음식 목록 조회 (더 넓은 범위)
-            search_terms = [food_name_clean, main_ingredient]
-            if ingredients and len(ingredients) > 1:
-                search_terms.append(ingredients[1].replace(" ", ""))
-            
-            # 여러 검색어로 후보 수집
-            all_candidates = []
-            seen_ids = set()
-            
-            for term in search_terms[:2]:  # 최대 2개 검색어
-                stmt = select(
-                    FoodNutrient.food_id,
-                    FoodNutrient.nutrient_name,
-                    FoodNutrient.food_class1,
-                    FoodNutrient.food_class2
-                ).where(
-                    or_(
-                        FoodNutrient.nutrient_name.like(f"%{term}%"),
-                        FoodNutrient.food_class1.like(f"%{term}%"),
-                        FoodNutrient.food_class2.like(f"%{term}%")
-                    )
-                ).limit(15)
-                
-                result = await session.execute(stmt)
-                candidates = result.fetchall()
-                
-                for row in candidates:
-                    if row[0] not in seen_ids:
-                        all_candidates.append(row)
-                        seen_ids.add(row[0])
-            
-            if not all_candidates:
-                print(f"  ❌ GPT 매칭용 후보 없음")
-                return None
-            
-            # 최대 20개로 제한
-            all_candidates = all_candidates[:20]
-            print(f"  → GPT에게 {len(all_candidates)}개 후보 제공")
-            
-            # 3. GPT에게 유사도 판단 요청 (한글 설명 추가)
-            candidate_list = "\n".join([
-                f"- {row[0]}: {row[1]} (대분류: {row[2]}, 중분류: {row[3]})"
-                for row in all_candidates
-            ])
-            
-            prompt = f"""다음 음식 목록에서 "{food_name}"와 가장 유사한 음식의 food_id를 선택하세요.
-
-검색 정보:
-- 음식명: {food_name}
-- 재료: {', '.join(ingredients) if ingredients else '없음'}
-
-음식 목록:
-{candidate_list}
-
-**중요:** food_id만 정확히 답변하세요. (예: D101-00431000D-0001)
-설명 없이 food_id만 출력하세요."""
-            
-            response = await self.llm.ainvoke([
-                SystemMessage(content="당신은 한국 음식 분류 전문가입니다. food_id만 정확히 답변하세요."),
-                HumanMessage(content=prompt)
-            ])
-            
-            selected_food_id = response.content.strip()
-            print(f"  → GPT 선택: {selected_food_id}")
-            
-            # 4. 선택된 food_id로 조회
-            stmt = select(FoodNutrient).where(FoodNutrient.food_id == selected_food_id)
-            result = await session.execute(stmt)
-            matched = result.scalar_one_or_none()
-            
-            if matched:
-                print(f"  ✅ GPT 매칭 성공: {matched.nutrient_name}")
-            else:
-                print(f"  ⚠️ GPT가 선택한 food_id를 DB에서 찾을 수 없음")
-            
-            return matched
-            
-        except Exception as e:
-            print(f"  ❌ GPT 매칭 오류: {e}")
-            return None
     
     async def get_food_categories_for_gpt(
         self,

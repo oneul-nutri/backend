@@ -6,6 +6,7 @@ python-multipart==0.0.9
 # Database
 sqlalchemy[asyncio]==2.0.36
 asyncmy==0.2.9
+cryptography==46.0.7
 alembic==1.13.3
 
 # Configuration & Security
@@ -29,9 +30,6 @@ pillow==10.4.0
 
 # AI/ML - OpenAI GPT-Vision
 openai==1.54.3
-langchain>=0.3.4,<0.4.0
-langchain-openai>=0.2.2,<0.3.0
-langchain-community>=0.3.4,<0.4.0
 
 
 # Testing

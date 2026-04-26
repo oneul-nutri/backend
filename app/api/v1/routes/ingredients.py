@@ -4,8 +4,7 @@ from functools import lru_cache
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from langchain.schema import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,28 +27,31 @@ settings = get_settings()
 
 
 @lru_cache
-def get_recommendation_llm() -> ChatOpenAI:
+def get_recommendation_llm() -> AsyncOpenAI:
+    """식재료 추천용 OpenAI 클라이언트 팩토리.
+
+    이름은 LangChain 시절 그대로 유지 — 테스트 patch 지점 하위 호환.
+    모델/temperature는 호출 시점 인자로 지정.
+    """
     if not settings.openai_api_key:
         raise ValueError("OPENAI_API_KEY 환경 변수가 필요합니다.")
-    return ChatOpenAI(
-        api_key=settings.openai_api_key,
-        model="gpt-4o-mini",
-        temperature=0.7,
-    )
+    return AsyncOpenAI(api_key=settings.openai_api_key)
 
 
 async def save_major_conversation(session: AsyncSession, user: User, raw_text: str) -> None:
-    """
-    LangChain을 사용해 대화 내용을 요약하고 User.major_conversation에 저장
-    """
-    llm = get_recommendation_llm()
+    """대화 내용을 LLM으로 요약해 User.major_conversation에 저장"""
+    client = get_recommendation_llm()
     try:
         summary_prompt = f"다음 내용을 400자 이내 한국어로 요약하세요:\n\n{raw_text}"
-        summary_response = await llm.ainvoke([
-            SystemMessage(content="당신은 요약 도우미입니다."),
-            HumanMessage(content=summary_prompt)
-        ])
-        summary = summary_response.content.strip()
+        summary_response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.7,
+            messages=[
+                {"role": "system", "content": "당신은 요약 도우미입니다."},
+                {"role": "user", "content": summary_prompt},
+            ],
+        )
+        summary = (summary_response.choices[0].message.content or "").strip()
     except Exception as exc:
         print(f"⚠️ 대화 요약 실패, 원문 일부 저장: {exc}")
         summary = raw_text[:400]
@@ -256,7 +258,7 @@ async def get_food_recommendations(
     **Returns:**
         LLM 생성 음식 추천
     """
-    from app.services.recipe_recommender import get_recommendation_strategy
+    from app.services.recipe_recommendation_service import get_recommendation_strategy
     
     try:
         # 1. 사용자 정보 조회
@@ -329,13 +331,16 @@ async def get_food_recommendations(
         
         # 5. LLM 호출
         try:
-            llm = get_recommendation_llm()
-            messages = [
-                SystemMessage(content="전문 영양사. JSON만 응답."),
-                HumanMessage(content=prompt)
-            ]
-            response = await llm.ainvoke(messages)
-            recommendation_text = response.content
+            client = get_recommendation_llm()
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.7,
+                messages=[
+                    {"role": "system", "content": "전문 영양사. JSON만 응답."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            recommendation_text = response.choices[0].message.content or ""
             await save_major_conversation(session, user, recommendation_text)
             
         except Exception as e:

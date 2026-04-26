@@ -3,8 +3,6 @@ import base64
 import io
 from typing import Optional, List
 
-from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage
 from openai import AsyncOpenAI
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,29 +18,20 @@ class GPTVisionService:
     """GPT-Vision 음식 분석 서비스"""
     
     def __init__(self):
-        self.llm: Optional[ChatOpenAI] = None
         self.client: Optional[AsyncOpenAI] = None
         self._initialize_client()
-    
+
     def _initialize_client(self):
         """OpenAI 클라이언트 초기화"""
         if settings.openai_api_key:
             try:
-                self.llm = ChatOpenAI(
-                    api_key=settings.openai_api_key,
-                    model="gpt-4o",
-                    temperature=0.7,
-                    max_tokens=1500,
-                )
                 self.client = AsyncOpenAI(api_key=settings.openai_api_key)
                 print("✅ OpenAI GPT-Vision 클라이언트 초기화 완료!")
             except Exception as e:
                 print(f"❌ OpenAI 클라이언트 초기화 실패: {e}")
-                self.llm = None
                 self.client = None
         else:
             print("⚠️ OPENAI_API_KEY가 설정되지 않았습니다.")
-            self.llm = None
             self.client = None
     
     def _image_to_base64(self, image_bytes: bytes) -> str:
@@ -57,9 +46,9 @@ class GPTVisionService:
         """
         YOLO detection 결과와 함께 GPT-Vision으로 음식 분석
         """
-        if self.llm is None:
+        if self.client is None:
             raise RuntimeError("OpenAI 클라이언트가 초기화되지 않았습니다. OPENAI_API_KEY를 확인하세요.")
-        
+
         try:
             # 이미지 크기 확인 및 압축 (1MB 이상이면 리사이즈)
             image_size_kb = len(image_bytes) / 1024
@@ -67,16 +56,16 @@ class GPTVisionService:
                 print(f"⚠️ 이미지가 큽니다 ({image_size_kb:.2f} KB). 압축 중...")
                 from PIL import Image
                 import io
-                
+
                 img = Image.open(io.BytesIO(image_bytes))
-                
+
                 # 최대 1024px로 리사이즈
                 max_size = 1024
                 if max(img.size) > max_size:
                     ratio = max_size / max(img.size)
                     new_size = tuple(int(dim * ratio) for dim in img.size)
                     img = img.resize(new_size, Image.Resampling.LANCZOS)
-                
+
                 # JPEG로 압축
                 compressed_buffer = io.BytesIO()
                 img.convert('RGB').save(compressed_buffer, format='JPEG', quality=85)
@@ -85,41 +74,48 @@ class GPTVisionService:
 
             # 이미지를 base64로 인코딩
             base64_image = self._image_to_base64(image_bytes)
-            
+
             # YOLO detection 결과 요약
             detected_objects_summary = yolo_detection_result.get("summary", "객체 감지 안됨")
             detected_objects_list = yolo_detection_result.get("detected_objects", [])
-            
+
             # GPT-Vision 프롬프트 구성
             prompt = self._build_analysis_prompt(detected_objects_summary, detected_objects_list)
-            
+
             # GPT-Vision API 호출
-            message = HumanMessage(
-                content=[
-                    {"type": "text", "text": prompt},
+            response = await self.client.chat.completions.create(
+                model="gpt-4o",
+                temperature=0.7,
+                max_tokens=1500,
+                messages=[
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}",
-                            "detail": "high",
-                        },
-                    },
-                ]
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}",
+                                    "detail": "high",
+                                },
+                            },
+                        ],
+                    }
+                ],
             )
-            response = await self.llm.ainvoke([message])
-            gpt_response = response.content
-            
+            gpt_response = response.choices[0].message.content or ""
+
             # 디버깅: GPT 원본 응답 출력
             print("=" * 80)
             print("🤖 GPT-Vision 원본 응답:")
             print(gpt_response)
             print("=" * 80)
-            
+
             # GPT 응답을 구조화된 데이터로 변환
             analysis_result = self._parse_gpt_response(gpt_response)
-            
+
             return analysis_result
-            
+
         except Exception as e:
             print(f"❌ GPT-Vision 분석 실패: {e}")
             raise RuntimeError(f"GPT-Vision 분석 중 오류 발생: {str(e)}")

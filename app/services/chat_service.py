@@ -1,13 +1,23 @@
 from typing import Optional
-import redis.asyncio as redis
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
 
-from app.db.models import Conversation
+import redis.asyncio as redis
+from openai import AsyncOpenAI
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import get_settings
+from app.db.models import Conversation
+
+
+_SUMMARY_SYSTEM_PROMPT = (
+    "You are a summarization assistant. Your task is to create a concise summary "
+    "of a user's conversation with a nutritionist chatbot. An optional previous "
+    "summary is provided. Integrate the key information from the full chat history "
+    "into the previous summary. Focus on the user's goals, preferences, questions, "
+    "and any important conclusions or recommendations made."
+    "The final summary should be a self-contained, coherent paragraph in Korean."
+)
+
 
 class ChatService:
     def __init__(self, redis_client: redis.Redis, db_session: AsyncSession):
@@ -16,7 +26,7 @@ class ChatService:
         settings = get_settings()
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is not set.")
-        self.llm = ChatOpenAI(api_key=settings.openai_api_key, model="gpt-4o-mini", temperature=0)
+        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
 
     async def get_previous_session_id_and_update(
         self, user_id: int, current_session_id: str
@@ -29,7 +39,7 @@ class ChatService:
 
         redis_key = f"user:{user_id}:last_session"
         old_session_id = await self.redis_client.getset(redis_key, current_session_id)
-        
+
         return old_session_id
 
     async def summarize_conversation_if_needed(self, session_id: str) -> None:
@@ -45,7 +55,7 @@ class ChatService:
 
         # Check if summarization is needed
         if conversation.last_message_timestamp and (
-            not conversation.last_message_summarized_at or 
+            not conversation.last_message_summarized_at or
             conversation.last_message_timestamp > conversation.last_message_summarized_at
         ):
             # Extract new messages (this logic assumes all_chat is a structured log)
@@ -70,29 +80,19 @@ class ChatService:
         """
         Generates a new summary based on an old summary and new chat messages.
         """
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are a summarization assistant. Your task is to create a concise summary of a user's conversation with a nutritionist chatbot. "
-                    "An optional previous summary is provided. Integrate the key information from the full chat history into the previous summary. "
-                    "Focus on the user's goals, preferences, questions, and any important conclusions or recommendations made."
-                    "The final summary should be a self-contained, coherent paragraph in Korean."
-                ),
-                ("human", 
-                 "Previous Summary:\n"
-                 "{old_summary}\n\n"
-                 "Full Chat History (use this to update the summary):\n"
-                 "{chat_history}"
-                ),
-            ]
+        user_prompt = (
+            "Previous Summary:\n"
+            f"{old_summary or '이전 요약 없음'}\n\n"
+            "Full Chat History (use this to update the summary):\n"
+            f"{full_chat_history}"
         )
-        
-        chain = prompt | self.llm | StrOutputParser()
-        
-        new_summary = await chain.ainvoke({
-            "old_summary": old_summary or "이전 요약 없음",
-            "chat_history": full_chat_history,
-        })
-        
-        return new_summary
+
+        response = await self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            messages=[
+                {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
