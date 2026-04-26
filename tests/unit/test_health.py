@@ -1,5 +1,4 @@
-"""건강 체크 라우트 테스트"""
-
+"""Health check 엔드포인트 테스트"""
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -7,9 +6,8 @@ from app.main import app
 client = TestClient(app)
 
 
-def test_health_endpoint():
-    """건강 체크 엔드포인트 테스트"""
-    response = client.get("/api/v1/health")
+def test_healthz_endpoint():
+    """루트 readiness probe (/healthz) 테스트"""
+    response = client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-

@@ -1,0 +1,23 @@
+[tasks.setup-env]
+description = "Create .env from the template if it does not exist"
+run = """
+if [ ! -f .env ]; then
+  cp .env.example .env
+  echo ".env created from .env.example"
+else
+  echo ".env already exists"
+fi
+"""
+
+[tasks.dev]
+description = "Run backend locally with uvicorn (auto-reload)"
+run = ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+[tasks.start]
+description = "Run backend locally with uvicorn (production mode)"
+run = ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+[tasks.health]
+description = "Check the health endpoint"
+run = "curl -fsS http://127.0.0.1:8000/healthz"
+

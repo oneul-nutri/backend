@@ -232,6 +232,40 @@ INFO: Uvicorn running on http://127.0.0.1:8000
 
 <br/>
 
+## 🐳 Docker 배포
+
+Docker 기반으로 로컬 서버에 배포할 수 있습니다.
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+curl http://127.0.0.1:8000/healthz
+```
+
+자동화 파일:
+
+- `.github/workflows/docker-ci.yml`
+- `.github/workflows/docker-cd.yml`
+- `docker-compose.yml`
+- `Dockerfile`
+
+배포 PC를 GitHub self-hosted runner 로 연결하는 절차는 [docs/DOCKER_CICD_SETUP.md](./docs/DOCKER_CICD_SETUP.md) 에 정리했습니다.
+
+`mise`를 쓰면 Docker 명령을 짧게 고정할 수 있습니다.
+
+```bash
+mise run setup-env
+mise run rebuild
+mise run ps
+mise run logs
+mise run health
+```
+
+---
+
+<br/>
+
 ## 🔧 환경 설정
 
 ### 📝 필수 환경 변수
@@ -911,4 +945,3 @@ FileNotFoundError: [Errno 2] No such file or directory: 'yolo11-large.pt'
 <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=12,15,18,21,24&height=150&section=footer" />
 
 </div>
-

@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,8 @@ load_dotenv()
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
+from app.db.redis_session import redis_client
+from app.db.session import engine
 
 
 def configure_sqlalchemy_logging() -> None:
@@ -32,6 +35,18 @@ def configure_sqlalchemy_logging() -> None:
 configure_sqlalchemy_logging()
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """애플리케이션 생명주기 훅: shutdown 시 외부 리소스를 안전하게 해제한다."""
+    yield
+    # shutdown: DB 커넥션 풀, Redis 클라이언트 정리
+    await engine.dispose()
+    if redis_client is not None:
+        await redis_client.aclose()
+
 
 app = FastAPI(
     title="Food Calorie Vision API",
@@ -39,6 +54,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 # CORS 미들웨어 (SessionMiddleware보다 먼저 추가)
