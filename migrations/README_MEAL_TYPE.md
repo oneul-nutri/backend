@@ -35,7 +35,7 @@ mysql -u root -p tempdb < migrations/add_meal_type_to_user_food_history.sql
 
 #### Python 스크립트 사용
 ```bash
-cd food-calorie-vision-backend
+cd backend
 python -m alembic upgrade head
 ```
 

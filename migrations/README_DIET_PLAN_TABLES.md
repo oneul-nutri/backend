@@ -23,13 +23,13 @@ mysqldump -u root -p your_database > backup_before_diet_plan_$(date +%Y%m%d).sql
 ### 2단계: 마이그레이션 실행
 
 ```bash
-cd food-calorie-vision-backend/migrations
+cd backend/migrations
 mysql -u root -p your_database < create_diet_plan_tables.sql
 ```
 
 또는 MySQL Workbench에서:
 ```sql
-source C:/Users/hyuk/kcal_project/food/food-calorie-vision-backend/migrations/create_diet_plan_tables.sql
+source C:/Users/hyuk/kcal_project/food/backend/migrations/create_diet_plan_tables.sql
 ```
 
 ### 3단계: 테이블 생성 확인

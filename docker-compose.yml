@@ -2,8 +2,8 @@ services:
   app:
     build:
       context: .
-    image: food-calorie-vision-backend:local
-    container_name: food-calorie-vision-backend
+    image: oneul-nutri-backend:local
+    container_name: oneul-nutri-backend
     env_file:
       - .env
     ports:

@@ -189,8 +189,8 @@ GET /api/v1/health-report
 
 ```bash
 # 1️⃣ 저장소 클론
-git clone https://github.com/food-calorie-vision/food-calorie-vision-backend.git
-cd food-calorie-vision-backend
+git clone https://github.com/oneul-nutri/backend.git
+cd backend
 
 # 2️⃣ 가상환경 생성 및 활성화
 python -m venv venv
@@ -504,7 +504,7 @@ curl -X POST http://localhost:8000/api/v1/auth/signup \
 ## 📂 프로젝트 구조
 
 ```
-🌳 food-calorie-vision-backend/
+🌳 backend/
 │
 ├── 📁 app/                          # 애플리케이션 루트
 │   ├── 📄 main.py                  # FastAPI 앱 진입점
@@ -915,14 +915,14 @@ FileNotFoundError: [Errno 2] No such file or directory: 'yolo11-large.pt'
 질문이나 제안사항이 있으신가요?
 
 📧 **Email:** backend@k-calculator.com  
-💬 **Issues:** [GitHub Issues](https://github.com/food-calorie-vision/food-calorie-vision-backend/issues)  
+💬 **Issues:** [GitHub Issues](https://github.com/oneul-nutri/backend/issues)  
 📚 **API Docs:** [Swagger UI](http://localhost:8000/docs)
 
 <br/>
 
 ### 🌟 Star 주시면 큰 힘이 됩니다!
 
-[![Star](https://img.shields.io/github/stars/food-calorie-vision/food-calorie-vision-backend?style=social)](https://github.com/food-calorie-vision/food-calorie-vision-backend/stargazers)
+[![Star](https://img.shields.io/github/stars/oneul-nutri/backend?style=social)](https://github.com/oneul-nutri/backend/stargazers)
 
 </div>
 
