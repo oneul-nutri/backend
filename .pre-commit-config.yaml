@@ -1,0 +1,28 @@
+# backend — Tier 1 hooks (commit-msg + 코스메틱)
+# 정책: docs/architecture/decisions/ 또는 docs/capa/와 연동.
+
+repos:
+  # Conventional Commits — commit message 포맷 강제
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: []
+
+  # 코스메틱 자동 수정 (LLM 세션 간 일관성 유지)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.venv/|\.pytest_cache/|__pycache__/|alembic/versions/'
+      - id: end-of-file-fixer
+        exclude: '\.venv/|\.pytest_cache/|__pycache__/|alembic/versions/'
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: '\.venv/|\.pytest_cache/|__pycache__/|alembic/versions/'
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+        exclude: '\.venv/|\.pytest_cache/|models/'
