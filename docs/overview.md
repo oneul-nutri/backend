@@ -1,14 +1,13 @@
 ﻿# 디렉터리 개요
 
-Food Calorie Vision 백엔드 프로젝트는 FastAPI와 MySQL을 사용하며, 주요 디렉터리는 다음과 같은 역할을 맡습니다.
+K-Calculator (oneul-nutri/backend) 백엔드 프로젝트는 FastAPI와 MySQL을 사용하며, 주요 디렉터리는 다음과 같은 역할을 맡습니다.
 
 ## app/
 - FastAPI 애플리케이션 핵심 코드가 위치합니다.
 - `api/`: 라우터와 응답 스키마(`app.api.v1` 등)를 정의합니다.
 - `core/`: 환경 설정과 공통 상수·도우미를 모아둡니다.
 - `db/`: SQLAlchemy 베이스 클래스와 세션 팩토리를 제공합니다.
-- `services/`: 도메인 비즈니스 로직을 구현합니다.
-- `workers/`: YOLO, LangChain 등 비동기 작업 모듈을 배치합니다.
+- `services/`: 도메인 비즈니스 로직 + AI 통합 (OpenAI SDK 직접 사용, LangChain 제거됨, 2026-04-27 TODO #4 종결).
 - `utils/`: 재사용 가능한 헬퍼 함수를 보관합니다.
 
 ## alembic/
